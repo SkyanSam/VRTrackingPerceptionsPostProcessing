@@ -4,15 +4,19 @@ using System.Collections.Generic;
 using UnityEngine;
 using System.IO;
 using System.Linq;
+using Newtonsoft.Json;
 
 public class PostProcessing : MonoBehaviour
 {
+    public GameObject researcherHead;
     public long currentTick;
     string vrcString = "";
     string oscString = "";
+    List<Vector3> VRCresearcherPosition = new List<Vector3>();
     List<Vector3> VRCpositions = new List<Vector3>();
     List<Vector3> VRCrotations = new List<Vector3>();
     public List<long> VRCticks = new List<long>();
+    public List<long> VRCresearcherTicks = new List<long>();
     public long firstTick;
     public long lastTick;
     public long sceneStartTick;
@@ -23,6 +27,8 @@ public class PostProcessing : MonoBehaviour
     public List<long> OSCticks = new List<long>();
 
     public float raycastMaxDistance;
+
+    public Dictionary<string, float> data = new Dictionary<string, float>();
     void Start()
     {
         // VRC
@@ -65,13 +71,18 @@ public class PostProcessing : MonoBehaviour
                 var split2 = clause.Split('|');
                 foreach (var s in split2)
                 {
-                    if (s.StartsWith("position") || s.StartsWith("rotation"))
+                    if (s.StartsWith("position") || s.StartsWith("rotation") || s.StartsWith("rPosition"))
                     {
                         var split3 = s.Split(",");
                             
                         var vec = (new Vector3(float.Parse(split3[1]), float.Parse(split3[2]), float.Parse(split3[3])));
                         if (s.StartsWith("position")) VRCpositions.Add(vec);
                         if (s.StartsWith("rotation")) VRCrotations.Add(vec);
+                        if (s.StartsWith("rPosition"))
+                        {
+                            VRCresearcherPosition.Add(vec);
+                            VRCresearcherTicks.Add(VRCticks[VRCticks.Count - 1]);
+                        }
                     }
                     if (s.StartsWith("ticks"))
                     {
@@ -126,6 +137,12 @@ public class PostProcessing : MonoBehaviour
         firstTick = OSCticks[0] > VRCticks[0] ? OSCticks[0] : VRCticks[0];
         lastTick = OSCticks[OSCticks.Count - 1] < VRCticks[VRCticks.Count - 1] ? OSCticks[OSCticks.Count - 1] : VRCticks[VRCticks.Count - 1];
 
+        // If we are using researcher data recalculate first/last tick.
+        if (VRCresearcherTicks.Count > 0)
+        {
+            firstTick = VRCresearcherTicks[0] > firstTick? VRCresearcherTicks[0] : firstTick;
+            lastTick = VRCresearcherTicks[VRCresearcherTicks.Count - 1] < lastTick ? VRCresearcherTicks[VRCresearcherTicks.Count - 1] : lastTick;
+        }
         sceneStartTick = DateTime.UtcNow.Ticks;
     }
 
@@ -142,8 +159,9 @@ public class PostProcessing : MonoBehaviour
 
         return -1;
     }
-    
+
     // Update is called once per frame
+    bool exportedJson = false;
     void Update()
     {
         currentTick = DateTime.UtcNow.Ticks - sceneStartTick + firstTick;
@@ -151,16 +169,27 @@ public class PostProcessing : MonoBehaviour
         {
             int closestVRCtick = FindIndex(currentTick, ref VRCticks);
             int closestOSCtick = FindIndex(currentTick, ref OSCticks);
+            int closestVRCrTick = FindIndex(currentTick, ref VRCresearcherTicks);
             Debug.Log($"{closestVRCtick}, {closestOSCtick}");
             transform.position = VRCpositions[closestVRCtick];
             transform.eulerAngles = VRCrotations[closestVRCtick];
+            if (VRCresearcherPosition.Count > 0)
+            {
+                researcherHead.transform.position = VRCresearcherPosition[closestVRCrTick];
+            }
+
 
             Quaternion gazeQ = new Quaternion();
             gazeQ.eulerAngles = new Vector3(OSCgazes[closestOSCtick][0] * 45, OSCgazes[closestOSCtick][1] * 45, 0);
             Vector3 gaze = gazeQ * Vector3.forward;
-            
+
             RaycastHit hit;
             var isHit = Physics.Raycast(new Ray(transform.position, transform.rotation * gaze), out hit, raycastMaxDistance, LayerMask.GetMask("EyeTracking"));
+            if (isHit)
+            {
+                data[hit.collider.tag] += Time.deltaTime;
+            }
+            data["TotalTime"] += Time.deltaTime;
             debugLine.SetPosition(0, transform.position);
             debugLine.SetPosition(1, transform.rotation * gaze * raycastMaxDistance);
             //Gizmos.DrawLine(transform.position, transform.rotation * gaze);
@@ -168,6 +197,12 @@ public class PostProcessing : MonoBehaviour
             {
                 print("HIT SUCCESSFUL");
             }
+        }
+        else if (!exportedJson)
+        {
+            exportedJson = true;
+            string rawJson = JsonConvert.SerializeObject(data);
+            File.WriteAllText(Application.streamingAssetsPath + "/data.json", rawJson);
         }
     }
 }
